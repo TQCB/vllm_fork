@@ -317,6 +317,14 @@ class CudagraphDispatcher:
             f"No matching cudagraph found and NONE is not in "
             f"allowed_modes={allowed_modes}"
         )
+        logger.debug(
+            "cudagraph dispatch NONE: num_tokens=%d uniform_decode=%s "
+            "batch_desc=%s cudagraph_mode=%s",
+            num_tokens,
+            uniform_decode,
+            batch_desc,
+            self.cudagraph_mode,
+        )
         return CUDAGraphMode.NONE, BatchDescriptor(num_tokens)
 
     def get_capture_descs(self) -> list[tuple[CUDAGraphMode, list[BatchDescriptor]]]:
