@@ -4209,6 +4209,14 @@ class GPUModelRunner(
                 spec_decode_common_attn_metadata.max_seq_len + self.num_spec_tokens
                 <= self.effective_drafter_max_model_len
             )
+            # Skip drafting if no request has more than 1 token left to
+            # generate (drafting would be wasted compute).
+            any_request_needs_drafting = any(
+                (sp := self.requests[req_id].sampling_params) is None
+                or sp.max_tokens is None
+                or sp.max_tokens - len(self.requests[req_id].output_token_ids) > 1
+                for req_id in self.input_batch.req_ids
+            )
             use_gpu_toks = (
                 spec_config.use_eagle()
                 or spec_config.uses_draft_model()
@@ -4225,7 +4233,7 @@ class GPUModelRunner(
                     | ExtractHiddenStatesProposer,
                 )
                 sampled_token_ids = sampler_output.sampled_token_ids
-                if input_fits_in_drafter:
+                if input_fits_in_drafter and any_request_needs_drafting:
                     propose_draft_token_ids(sampled_token_ids)
                 elif self.valid_sampled_token_count_event is not None:
                     assert spec_decode_common_attn_metadata is not None
@@ -4246,7 +4254,7 @@ class GPUModelRunner(
             ):
                 assert isinstance(self.drafter, NgramProposerGPU)
                 sampled_token_ids = sampler_output.sampled_token_ids
-                if input_fits_in_drafter:
+                if input_fits_in_drafter and any_request_needs_drafting:
                     propose_draft_token_ids(sampled_token_ids)
                 elif self.valid_sampled_token_count_event is not None:
                     assert spec_decode_common_attn_metadata is not None
@@ -4294,7 +4302,7 @@ class GPUModelRunner(
                 spec_decode_metadata,
             )
 
-        if propose_drafts_after_bookkeeping:
+        if propose_drafts_after_bookkeeping and any_request_needs_drafting:
             # ngram and other speculative decoding methods use the sampled
             # tokens on the CPU, so they are run after bookkeeping.
             propose_draft_token_ids(valid_sampled_token_ids)
