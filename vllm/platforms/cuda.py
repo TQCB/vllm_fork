@@ -684,14 +684,9 @@ class CudaPlatformBase(Platform):
 
     @classmethod
     def get_default_ir_op_priority(cls, vllm_config: VllmConfig) -> IrOpPriorityConfig:
-        from vllm.config.compilation import CompilationMode
         from vllm.config.kernel import IrOpPriorityConfig
 
-        # Native used by default when compiling,
-        # use vllm_c kernels where available when no codegen
-        cc = vllm_config.compilation_config
-        using_inductor = cc.backend == "inductor" and cc.mode != CompilationMode.NONE
-        default = ["native"] if using_inductor else ["vllm_c", "native"]
+        default = ["vllm_c", "native"]
 
         # Use oink if enabled for rms_norm
         # TODO(Laurawly/luka): remove this env var,
@@ -700,6 +695,21 @@ class CudaPlatformBase(Platform):
         if envs.VLLM_USE_OINK_OPS:
             rms_norm = ["oink"] + default
 
+        return IrOpPriorityConfig.with_default(
+            default, rms_norm=rms_norm, fused_add_rms_norm=rms_norm
+        )
+
+    @classmethod
+    def get_default_compile_ir_op_priority(
+        cls, vllm_config: VllmConfig
+    ) -> IrOpPriorityConfig:
+        from vllm.config.compilation import CompilationMode
+        from vllm.config.kernel import IrOpPriorityConfig
+
+        cc = vllm_config.compilation_config
+        using_inductor = cc.backend == "inductor" and cc.mode != CompilationMode.NONE
+        default = ["native"] if using_inductor else ["vllm_c", "native"]
+        rms_norm = (["oink"] if envs.VLLM_USE_OINK_OPS else []) + default
         return IrOpPriorityConfig.with_default(
             default, rms_norm=rms_norm, fused_add_rms_norm=rms_norm
         )

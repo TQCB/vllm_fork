@@ -341,7 +341,19 @@ class IrOp:
                 )
             return self.impls["native"]
 
-        for impl in self._priority_impls:
+        return self._dispatch_from(self._priority_impls, *args, **kwargs)
+
+    def dispatch_with_priority(
+        self, priority: list[str], *args, **kwargs
+    ) -> "IrOpImpl":
+        """Dispatch with an explicit priority without changing runtime state."""
+        priority_impls = self._filter_priority_impls(priority)
+        return self._dispatch_from(priority_impls, *args, **kwargs)
+
+    def _dispatch_from(
+        self, priority_impls: list["IrOpImpl"], *args, **kwargs
+    ) -> "IrOpImpl":
+        for impl in priority_impls:
             if not impl.supported:
                 raise ValueError(
                     f"Implementation {impl.provider} for op {self.name} not supported. "

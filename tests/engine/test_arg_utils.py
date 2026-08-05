@@ -626,11 +626,17 @@ def test_ir_op_priority():
     from vllm.config.kernel import IrOpPriorityConfig, KernelConfig
 
     ir_op_priority = IrOpPriorityConfig(rms_norm=["vllm_c"])
+    compile_ir_op_priority = IrOpPriorityConfig(rms_norm=["native"])
     cfg1 = EngineArgs(ir_op_priority=ir_op_priority).create_engine_config()
     cfg2 = EngineArgs(
         kernel_config=KernelConfig(ir_op_priority=ir_op_priority)
     ).create_engine_config()
     assert cfg1.kernel_config.ir_op_priority == cfg2.kernel_config.ir_op_priority
+
+    cfg3 = EngineArgs(
+        compile_ir_op_priority=compile_ir_op_priority
+    ).create_engine_config()
+    assert cfg3.kernel_config.compile_ir_op_priority.rms_norm == ["native"]
 
     with pytest.raises(ValueError, match="rms_norm"):
         _ = EngineArgs(

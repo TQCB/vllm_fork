@@ -1665,6 +1665,46 @@ def test_ir_op_priority_default():
     assert priority_config.fused_add_rms_norm == ["native"]
 
 
+def test_runtime_and_compile_ir_op_priority_defaults():
+    runtime_defaults = IrOpPriorityConfig.with_default(["vllm_c", "native"])
+    compile_defaults = IrOpPriorityConfig.with_default(["native"])
+
+    with (
+        patch.object(
+            current_platform,
+            "get_default_ir_op_priority",
+            return_value=runtime_defaults,
+        ),
+        patch.object(
+            current_platform,
+            "get_default_compile_ir_op_priority",
+            return_value=compile_defaults,
+        ),
+    ):
+        kernel_config = KernelConfig()
+        kernel_config.set_platform_defaults(SimpleNamespace())
+        assert kernel_config.ir_op_priority.rms_norm == ["vllm_c", "native"]
+        assert kernel_config.compile_ir_op_priority.rms_norm == ["native"]
+
+        legacy_override = KernelConfig(
+            ir_op_priority=IrOpPriorityConfig(rms_norm=["vllm_c"])
+        )
+        legacy_override.set_platform_defaults(SimpleNamespace())
+        assert legacy_override.ir_op_priority.rms_norm == ["vllm_c", "native"]
+        assert legacy_override.compile_ir_op_priority.rms_norm == [
+            "vllm_c",
+            "native",
+        ]
+
+        split_override = KernelConfig(
+            ir_op_priority=IrOpPriorityConfig(rms_norm=["vllm_c"]),
+            compile_ir_op_priority=IrOpPriorityConfig(rms_norm=["native"]),
+        )
+        split_override.set_platform_defaults(SimpleNamespace())
+        assert split_override.ir_op_priority.rms_norm == ["vllm_c", "native"]
+        assert split_override.compile_ir_op_priority.rms_norm == ["native"]
+
+
 def test_ir_op_priority_str():
     """Test that passing a comma-delimited string works"""
     from vllm.config.kernel import IrOpPriorityConfig

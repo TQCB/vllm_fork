@@ -19,9 +19,7 @@ logger = init_logger(__name__)
 @config
 class IrOpPriorityConfig:
     """
-    Configuration for vLLM IR op priority for dispatching/lowering during the
-    forward pass. Each member is a list of strings, which will be installed
-    in worker init via vllm.ir.ops.<op_name>.set_default().
+    Configuration for vLLM IR op priority. Each member is a list of strings.
     A single comma-separated string is accepted as well,
 
     If specified manually, platform defaults will be appended to the lists.
@@ -169,8 +167,16 @@ class KernelConfig:
 
     ir_op_priority: IrOpPriorityConfig = Field(default_factory=IrOpPriorityConfig)
     """
-    vLLM IR op priority for dispatching/lowering during the forward pass.
+    vLLM IR op priority for eager runtime dispatch.
     Platform defaults appended automatically during VllmConfig.__post_init__.
+    """
+
+    compile_ir_op_priority: IrOpPriorityConfig = Field(
+        default_factory=IrOpPriorityConfig
+    )
+    """
+    vLLM IR op priority for compiler lowering. An explicit ir_op_priority is
+    inherited when this is unset for backward compatibility.
     """
 
     enable_flashinfer_autotune: bool = None  # type: ignore[assignment]
@@ -262,9 +268,11 @@ class KernelConfig:
             "enable_jit_warmup",
             "enable_flashinfer_autotune",
             "ir_op_priority",  # handled separately below
+            "compile_ir_op_priority",  # handled separately below
         }
         factors = get_hash_factors(self, ignored_factors)
         factors["ir_op_priority"] = self.ir_op_priority.compute_hash()
+        factors["compile_ir_op_priority"] = self.compile_ir_op_priority.compute_hash()
         return hash_factors(factors)
 
     @field_validator(
@@ -284,26 +292,43 @@ class KernelConfig:
         """Set platform-specific defaults for the kernel config."""
         from vllm.platforms import current_platform
 
-        platform_op_priority = current_platform.get_default_ir_op_priority(vllm_config)
+        runtime_defaults = current_platform.get_default_ir_op_priority(vllm_config)
+        compile_defaults = current_platform.get_default_compile_ir_op_priority(
+            vllm_config
+        )
         logger.debug(
-            "Setting platform-specific IR op priority defaults: %s, user-defined: %s",
-            platform_op_priority,
+            "Setting platform-specific runtime IR op priority defaults: %s, "
+            "user-defined: %s",
+            runtime_defaults,
             self.ir_op_priority,
         )
-        for op_name, op_priority in asdict(platform_op_priority).items():
-            current_op_priority: list[str] = getattr(self.ir_op_priority, op_name)
-            if current_op_priority is None:
-                setattr(self.ir_op_priority, op_name, op_priority)
-            else:
-                # Append platform-specific priorities
-                # Must be idempotent because vllm_config.set_platform_defaults() may be
-                # called multiple times (due to VllmConfig.__post_init__ manual call).
-                unique_op_priority = [
-                    op for op in op_priority if op not in current_op_priority
-                ]
-                current_op_priority.extend(unique_op_priority)
+        logger.debug(
+            "Setting platform-specific compile IR op priority defaults: %s, "
+            "user-defined: %s",
+            compile_defaults,
+            self.compile_ir_op_priority,
+        )
+
+        for op_name in asdict(self.ir_op_priority):
+            runtime_priority: list[str] = getattr(self.ir_op_priority, op_name)
+            compile_priority: list[str] = getattr(self.compile_ir_op_priority, op_name)
+
+            # Existing explicit configurations controlled both paths before the split.
+            if not compile_priority and runtime_priority:
+                compile_priority.extend(runtime_priority)
+
+            for priority, defaults in (
+                (runtime_priority, getattr(runtime_defaults, op_name)),
+                (compile_priority, getattr(compile_defaults, op_name)),
+            ):
+                unique_defaults = [op for op in defaults if op not in priority]
+                priority.extend(unique_defaults)
 
         logger.info(
-            "Final IR op priority after setting platform defaults: %s",
+            "Final runtime IR op priority after setting platform defaults: %s",
             self.ir_op_priority,
+        )
+        logger.info(
+            "Final compile IR op priority after setting platform defaults: %s",
+            self.compile_ir_op_priority,
         )

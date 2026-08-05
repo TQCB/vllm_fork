@@ -1282,11 +1282,18 @@ class Platform:
     def get_default_ir_op_priority(
         cls, vllm_config: "VllmConfig"
     ) -> "IrOpPriorityConfig":
-        """Get the default IR op priority for the current platform."""
+        """Get the default eager runtime IR op priority for the platform."""
         from vllm.config.kernel import IrOpPriorityConfig
 
         # Native always used by default. Platforms can override this behavior.
         return IrOpPriorityConfig.with_default(["native"])
+
+    @classmethod
+    def get_default_compile_ir_op_priority(
+        cls, vllm_config: "VllmConfig"
+    ) -> "IrOpPriorityConfig":
+        """Get the default compiler-lowering IR op priority for the platform."""
+        return cls.get_default_ir_op_priority(vllm_config)
 
     @classmethod
     def is_arch_support_pdl(cls) -> bool:

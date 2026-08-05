@@ -29,6 +29,7 @@ class VllmIRLoweringPass(VllmInductorPass):
 
     def __init__(self, vllm_config: VllmConfig) -> None:
         super().__init__(vllm_config)
+        self.priority_config = vllm_config.kernel_config.compile_ir_op_priority
         self.patterns = PatternMatcherPass(self.pass_name)
         self.selected_impls: dict[str, dict[str, str]] = defaultdict(lambda: {})
         self.ops = [ir_op.torch_op for ir_op in IrOp.registry.values()]
@@ -51,7 +52,8 @@ class VllmIRLoweringPass(VllmInductorPass):
 
         # Select and record the implementation, using fake args
         fake_args = fx.map_arg(node.args, lambda arg: arg.meta["val"])
-        ir_op_impl = ir_op.dispatch(*fake_args)
+        priority = getattr(self.priority_config, ir_op.name)
+        ir_op_impl = ir_op.dispatch_with_priority(priority, *fake_args)
         self.selected_impls[ir_op.name][node.name] = ir_op_impl.provider
 
         # replace_by_example wants node args, not the fake tensors
@@ -117,7 +119,9 @@ class VllmIRLoweringPass(VllmInductorPass):
         IR op priority & impl sources affect lowering pass output,
         so we include them in the cache key.
         """
-        priorities = {name: op.get_priority() for name, op in IrOp.registry.items()}
+        priorities = {
+            name: getattr(self.priority_config, name) for name in IrOp.registry
+        }
         priorities_str = ";".join(
             f"{name}={','.join(p)}" for name, p in priorities.items()
         )

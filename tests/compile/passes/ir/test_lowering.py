@@ -38,16 +38,22 @@ class Model(nn.Module):
 def test_lowering_rms_norm(rms_provider, default_vllm_config):
     torch.set_default_device(current_platform.device_type)
 
-    lowering_pass = VllmIRLoweringPass(get_current_vllm_config())
+    vllm_config = get_current_vllm_config()
+    vllm_config.kernel_config.compile_ir_op_priority.rms_norm = [
+        rms_provider,
+        "native",
+    ]
+    lowering_pass = VllmIRLoweringPass(vllm_config)
     backend = TestBackend(lowering_pass)
     backend_unlowered = TestBackend()
 
     model = Model()
     x = torch.randn(8, 16, dtype=torch.bfloat16)
     with (
-        ops.rms_norm.set_priority([rms_provider, "native"]),
+        ops.rms_norm.set_priority(["native"]),
         ir.enable_torch_wrap(True),
     ):
+        assert ops.rms_norm.dispatch(x, model.weight, 1e-5).provider == "native"
         compiled_model = torch.compile(model, backend=backend, fullgraph=True)
         compiled_unlowered_model = torch.compile(
             model, backend=backend_unlowered, fullgraph=True

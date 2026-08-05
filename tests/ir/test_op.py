@@ -327,6 +327,19 @@ class TestIrOpImplDispatch:
         assert out3.item() == 1 + 2 + 10
         assert out4.item() == 1 + 2 + 10
 
+    def test_dispatch_with_priority_does_not_change_runtime_priority(
+        self, custom_add_op
+    ):
+        _custom_add = custom_add_op
+        x = torch.tensor(1, dtype=torch.int32)
+        y = torch.tensor(2, dtype=torch.int32)
+
+        with _custom_add.set_priority(["impl_a"]):
+            selected = _custom_add.dispatch_with_priority(["impl_b"], x, y)
+            assert selected is _custom_add.impls["impl_b"]
+            assert _custom_add.get_priority() == ["impl_a"]
+            assert _custom_add.dispatch(x, y) is _custom_add.impls["impl_a"]
+
     def test_unsupported_impl_filtered(self, custom_add_op):
         _custom_add = custom_add_op
 

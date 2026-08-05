@@ -111,9 +111,9 @@ class RMSNorm(nn.Module):
 
 ### Configuring Kernel Selection
 
-Kernel selection is controlled via priority lists in the configuration.
-Priority lists specify the order in which implementations are considered,
-with the first supported implementation being selected.
+Kernel selection is controlled via runtime and compiler-lowering priority lists.
+Each list specifies the order in which implementations are considered, with the
+first supported implementation being selected.
 This includes the static support check (`supported=...`) and
 the dynamic arg support check (`supports_args=...`).
 
@@ -125,6 +125,10 @@ Use `--ir-op-priority.<op_name>=<provider1>,<provider2>,...`:
 # CUDA: Use vllm_c implementation for rms_norm
 vllm serve meta-llama/Llama-3.2-1B \
   --ir-op-priority.rms_norm=vllm_c
+
+# Use native decomposition when lowering compiled rms_norm nodes
+vllm serve meta-llama/Llama-3.2-1B \
+  --compile-ir-op-priority.rms_norm=native
 
 # ROCm: Try aiter first, fall back to vllm_c, then native
 vllm serve meta-llama/Llama-3.2-1B \
@@ -149,7 +153,11 @@ llm = LLM(
             ir_op_priority={
                 "rms_norm": ["vllm_c", "native"],
                 "fused_add_rms_norm": ["vllm_c", "native"],
-            }
+            },
+            compile_ir_op_priority={
+                "rms_norm": ["native"],
+                "fused_add_rms_norm": ["native"],
+            },
         )
     )
 )
@@ -160,16 +168,16 @@ llm = LLM(
 Each platform provides default priority lists that are automatically applied:
 
 ```python
-# CUDA/XPU/ROCm platform defaults (when compiling with Inductor)
-{
-  "rms_norm": ["native"],  # Native torch is default
-  "fused_add_rms_norm": ["native"],
-}
-
-# CUDA platform defaults (eager or Dynamo-only)
+# CUDA runtime defaults
 {
   "rms_norm": ["vllm_c", "native"],
   "fused_add_rms_norm": ["vllm_c", "native"],
+}
+
+# CUDA compiler-lowering defaults with Inductor
+{
+  "rms_norm": ["native"],
+  "fused_add_rms_norm": ["native"],
 }
 
 # ROCm platform defaults (future - currently same as CUDA)
@@ -185,9 +193,9 @@ Each platform provides default priority lists that are automatically applied:
 }
 ```
 
-User-specified priorities are prepended to platform defaults,
-so you only need to specify the out-of-order implementations,
-other implementations are appended automatically.
+User-specified priorities are prepended to the corresponding platform defaults.
+For backward compatibility, an explicit `ir_op_priority` also seeds
+`compile_ir_op_priority` when no compile priority is specified.
 
 ## Compilation Pipeline
 
@@ -258,9 +266,9 @@ The implementation is chosen based on the priority list and support predicates,
 using the **fake tensors** in the graph's metadata in place of op arguments:
 
 ```python
-# Implementation selection, same in eager dispatch and compile lowering
-def dispatch(*args) -> IrOpImpl:
-  for provider in priority_list:  # e.g., ["vllm_c", "native"]
+# Implementation selection
+def dispatch(priority_list, *args) -> IrOpImpl:
+  for provider in priority_list:
     impl = ir_op.impls[provider]
     if not impl.supported:
       continue
@@ -524,21 +532,26 @@ Batch-invariant kernels are automatically selected when `VLLM_BATCH_INVARIANT=1`
 
 ### Eager Mode vs Compile Mode
 
-vLLM IR operations behave identically in eager and compile modes:
+vLLM IR operations have the same semantics in eager and compile modes, but may
+select different implementations:
 
 **Eager mode:**
 
-- Direct dispatch to implementation based on priority list
+- Direct dispatch based on `ir_op_priority`
 - Support checked with real tensor arguments
 - Minimal overhead (can be optimized further if needed)
 
 **Compile mode:**
 
 - IR ops appear in FX graph as `torch.ops.vllm_ir.*` custom ops
-- Lowering selects implementation using fake tensors
+- Lowering selects implementation using `compile_ir_op_priority` and fake tensors
 - Full integration with Inductor optimizations
 
-This consistency enables:
+The separate policies allow native decompositions to be optimized by Inductor
+without forcing IR ops that execute outside compiled graphs to use unfused native
+operations.
+
+Semantic consistency still enables:
 
 - Prototyping in eager mode with confidence
 - Debugging by disabling compilation

@@ -135,7 +135,7 @@ def enable_norm_fusion(cfg: "VllmConfig") -> bool:
     return (
         cfg.compilation_config.is_custom_op_enabled("rms_norm")
         or cfg.compilation_config.is_custom_op_enabled("quant_fp8")
-        or cfg.kernel_config.ir_op_priority.rms_norm[0] != "native"
+        or cfg.kernel_config.compile_ir_op_priority.rms_norm[0] != "native"
     )
 
 
@@ -204,7 +204,7 @@ def enable_norm_pad_fusion(cfg: "VllmConfig") -> bool:
     """Enable if using AITER RMSNorm and hidden size is 2880 i.e. gpt-oss."""
 
     return (
-        cfg.kernel_config.ir_op_priority.fused_add_rms_norm[0] == "aiter"
+        cfg.kernel_config.compile_ir_op_priority.fused_add_rms_norm[0] == "aiter"
         and cfg.model_config is not None
         and cfg.model_config.get_hidden_size() == 2880
     )

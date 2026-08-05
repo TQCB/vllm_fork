@@ -455,6 +455,9 @@ class EngineArgs:
         CompilationConfig, "max_cudagraph_capture_size"
     )
     ir_op_priority: IrOpPriorityConfig = get_field(KernelConfig, "ir_op_priority")
+    compile_ir_op_priority: IrOpPriorityConfig = get_field(
+        KernelConfig, "compile_ir_op_priority"
+    )
     # Note: Specifying a custom executor backend by passing a class
     # is intended for expert use only. The API may change without
     # notice.
@@ -781,6 +784,10 @@ class EngineArgs:
             )
         if isinstance(self.ir_op_priority, dict):
             self.ir_op_priority = IrOpPriorityConfig(**self.ir_op_priority)
+        if isinstance(self.compile_ir_op_priority, dict):
+            self.compile_ir_op_priority = IrOpPriorityConfig(
+                **self.compile_ir_op_priority
+            )
 
         from vllm.config.quantization import resolve_quantization_config
 
@@ -1545,6 +1552,10 @@ class EngineArgs:
             description=KernelConfig.__doc__,
         )
         kernel_group.add_argument("--ir-op-priority", **kernel_kwargs["ir_op_priority"])
+        kernel_group.add_argument(
+            "--compile-ir-op-priority",
+            **kernel_kwargs["compile_ir_op_priority"],
+        )
         kernel_group.add_argument(
             "--enable-flashinfer-autotune",
             **kernel_kwargs["enable_flashinfer_autotune"],
@@ -2389,21 +2400,18 @@ class EngineArgs:
         if self.linear_backend != "auto":
             kernel_config.linear_backend = self.linear_backend
 
-        # Transfer top-level ir_op_priority into KernelConfig.ir_op_priority
-        for op_name, op_priority in asdict(self.ir_op_priority).items():
-            # Empty means unset
-            if not op_priority:
-                continue
-
-            # Priority cannot be set 2x for the same op
-            if getattr(kernel_config.ir_op_priority, op_name):
-                raise ValueError(
-                    f"Op priority for {op_name} specified via both ir_op_priority "
-                    f"and KernelConfig.ir_op_priority, only one allowed at a time."
-                )
-
-            # Set the attribute
-            setattr(kernel_config.ir_op_priority, op_name, op_priority)
+        for arg_name in ("ir_op_priority", "compile_ir_op_priority"):
+            arg_priority = getattr(self, arg_name)
+            kernel_priority = getattr(kernel_config, arg_name)
+            for op_name, op_priority in asdict(arg_priority).items():
+                if not op_priority:
+                    continue
+                if getattr(kernel_priority, op_name):
+                    raise ValueError(
+                        f"Op priority for {op_name} specified via both {arg_name} "
+                        f"and KernelConfig.{arg_name}, only one allowed at a time."
+                    )
+                setattr(kernel_priority, op_name, op_priority)
 
         load_config = self.create_load_config()
 
