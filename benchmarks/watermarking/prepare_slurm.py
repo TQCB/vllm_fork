@@ -37,6 +37,8 @@ def common_header(
     memory: str,
     gpus: int,
     partition: str | None,
+    qos: str | None,
+    container_image: Path | None,
 ) -> list[str]:
     lines = [
         "#!/usr/bin/env bash",
@@ -53,6 +55,10 @@ def common_header(
         lines.append(directive("gpus", gpus))
     if partition:
         lines.append(directive("partition", partition))
+    if qos:
+        lines.append(directive("qos", qos))
+    if container_image:
+        lines.append(directive("container-image", container_image))
     lines.extend(
         [
             "",
@@ -107,10 +113,14 @@ def prepare(args: argparse.Namespace) -> Path:
         memory=args.memory,
         gpus=1,
         partition=args.partition,
+        qos=args.qos,
+        container_image=args.container_image,
     )
     performance_lines.extend(
         [
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
+            f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
+            "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
             run_matrix_command(python, config_path, "performance"),
         ]
     )
@@ -125,10 +135,14 @@ def prepare(args: argparse.Namespace) -> Path:
         memory=args.memory,
         gpus=1,
         partition=args.partition,
+        qos=args.qos,
+        container_image=args.container_image,
     )
     generation_lines.extend(
         [
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
+            f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
+            "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
             'case "$SLURM_ARRAY_TASK_ID" in',
         ]
     )
@@ -154,11 +168,15 @@ def prepare(args: argparse.Namespace) -> Path:
         cpus=args.cpus,
         memory=args.memory,
         gpus=0,
-        partition=args.partition,
+        partition=args.analysis_partition,
+        qos=args.qos,
+        container_image=args.container_image,
     )
     analysis_lines.extend(
         [
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
+            f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
+            "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
             shlex.join(
                 [
                     str(python),
@@ -211,6 +229,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python", type=Path)
     parser.add_argument("--account", default="runtime")
     parser.add_argument("--partition")
+    parser.add_argument("--analysis-partition", default="cpu")
+    parser.add_argument("--qos")
+    parser.add_argument("--container-image", type=Path)
     parser.add_argument("--max-parallel", default=4, type=int)
     parser.add_argument("--cpus", default=8, type=int)
     parser.add_argument("--memory", default="64G")
