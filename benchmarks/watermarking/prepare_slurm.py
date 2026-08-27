@@ -89,6 +89,15 @@ def write_script(path: Path, lines: list[str]) -> None:
     path.chmod(0o755)
 
 
+def environment_exports(config: dict[str, Any]) -> list[str]:
+    exports = []
+    for name, value in config.get("job_env", {}).items():
+        if not name.isidentifier():
+            raise ValueError(f"Invalid environment variable name: {name}")
+        exports.append(f"export {name}={shlex.quote(str(value))}")
+    return exports
+
+
 def prepare(args: argparse.Namespace) -> Path:
     config_path = args.config.resolve()
     config = load_config(config_path)
@@ -100,6 +109,7 @@ def prepare(args: argparse.Namespace) -> Path:
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     python = (args.python or Path(sys.executable)).resolve()
+    job_environment = environment_exports(config)
     performance_path = slurm_dir / "performance.sbatch"
     generation_path = slurm_dir / "generation.sbatch"
     analysis_path = slurm_dir / "analysis.sbatch"
@@ -121,6 +131,7 @@ def prepare(args: argparse.Namespace) -> Path:
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
             f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
             "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
+            *job_environment,
             run_matrix_command(python, config_path, "performance"),
         ]
     )
@@ -143,6 +154,7 @@ def prepare(args: argparse.Namespace) -> Path:
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
             f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
             "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
+            *job_environment,
             'case "$SLURM_ARRAY_TASK_ID" in',
         ]
     )
@@ -177,6 +189,7 @@ def prepare(args: argparse.Namespace) -> Path:
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
             f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
             "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
+            *job_environment,
             shlex.join(
                 [
                     str(python),
