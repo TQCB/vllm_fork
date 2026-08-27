@@ -147,7 +147,7 @@ def prepare(args: argparse.Namespace) -> Path:
         ]
     )
     for index, (variant, key) in enumerate(generation_units(config)):
-        extra = ["--variant", variant]
+        extra = ["--variant", variant, "--port", str(18000 + index)]
         if key is not None:
             extra.extend(["--key", str(key)])
         command = run_matrix_command(python, config_path, "generation", extra)

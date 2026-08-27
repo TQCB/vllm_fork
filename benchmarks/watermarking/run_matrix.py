@@ -288,6 +288,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--variant", action="append")
     parser.add_argument("--key", type=int)
+    parser.add_argument("--port", type=int)
     parser.add_argument("phase", choices=("performance", "generation", "all"))
     return parser.parse_args()
 
@@ -295,6 +296,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    if args.port is not None:
+        config["port"] = args.port
     variants = selected_variants(config, args.variant)
     if args.key is not None and args.phase != "generation":
         raise ValueError("--key is only valid for the generation phase")
