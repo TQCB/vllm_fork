@@ -64,6 +64,9 @@ def common_header(
             "",
             "source /etc/shell-config/shell-config.sh",
             "set -euo pipefail",
+            "unset VIRTUAL_ENV",
+            "apt-get update >/dev/null",
+            "apt-get install -y git >/dev/null",
         ]
     )
     return lines
@@ -130,7 +133,6 @@ def prepare(args: argparse.Namespace) -> Path:
         [
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
             f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
-            "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
             *job_environment,
             run_matrix_command(python, config_path, "performance"),
         ]
@@ -153,7 +155,6 @@ def prepare(args: argparse.Namespace) -> Path:
         [
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
             f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
-            "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
             *job_environment,
             'case "$SLURM_ARRAY_TASK_ID" in',
         ]
@@ -188,8 +189,11 @@ def prepare(args: argparse.Namespace) -> Path:
         [
             f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
             f"export PYTHONPATH={shlex.quote(str(_REPOSITORY_ROOT))}",
-            "export LOCAL_VLLM_KERNELS=/opt/vllm-kernels",
             *job_environment,
+            (
+                "VLLM_USE_PRECOMPILED=1 uv pip install --system -e "
+                f"{shlex.quote(str(_REPOSITORY_ROOT))}"
+            ),
             shlex.join(
                 [
                     str(python),

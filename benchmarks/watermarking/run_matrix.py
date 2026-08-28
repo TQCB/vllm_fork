@@ -42,6 +42,18 @@ def variant_command(variant: dict[str, Any]) -> list[str]:
     return [str(part) for part in command]
 
 
+def setup_variant(variant: dict[str, Any], execute: bool) -> None:
+    command = variant.get("setup_command")
+    if command is None:
+        return
+    run_command(
+        [str(part) for part in command],
+        variant.get("cwd"),
+        variant.get("setup_env"),
+        execute,
+    )
+
+
 def print_command(
     command: Iterable[str],
     cwd: str | None = None,
@@ -139,6 +151,7 @@ def run_performance(
 ) -> None:
     root = Path(config["results_dir"]) / "performance"
     for variant in variants:
+        setup_variant(variant, execute)
         results_dir = root / variant["name"]
         if execute:
             results_dir.mkdir(parents=True, exist_ok=True)
@@ -236,6 +249,7 @@ def run_generation(
 ) -> None:
     results_root = Path(config["results_dir"])
     for variant in variants:
+        setup_variant(variant, execute)
         keys = config["keys"] if variant["watermarked"] else [None]
         if key is not None:
             if not variant["watermarked"]:
