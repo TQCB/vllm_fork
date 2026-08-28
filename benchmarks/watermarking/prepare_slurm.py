@@ -111,7 +111,7 @@ def prepare(args: argparse.Namespace) -> Path:
     logs_dir = slurm_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    python = (args.python or Path(sys.executable)).resolve()
+    python = args.python if args.python is not None else Path(sys.executable).resolve()
     job_environment = environment_exports(config)
     performance_path = slurm_dir / "performance.sbatch"
     generation_path = slurm_dir / "generation.sbatch"
