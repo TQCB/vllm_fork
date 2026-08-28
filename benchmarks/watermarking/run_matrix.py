@@ -174,6 +174,7 @@ def server_command(
         f"--host={config.get('host', '127.0.0.1')}",
         f"--port={config.get('port', 8000)}",
         *config.get("server_args", []),
+        *config.get("generation_server_args", []),
     ]
     if key is not None:
         command.append(f"--watermark-config={watermark_config(config, key)}")

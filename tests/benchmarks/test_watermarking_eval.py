@@ -16,6 +16,7 @@ from benchmarks.watermarking.run_matrix import (
     generation_commands,
     performance_commands,
     selected_variants,
+    server_command,
 )
 
 
@@ -126,6 +127,21 @@ def test_generation_matrix_uses_full_sweep_for_one_fixed_key():
 
     assert "--seeds 100 200 300" in first
     assert "--seeds 200" in second
+
+
+def test_generation_server_uses_generation_only_arguments():
+    config = {
+        "model": "model",
+        "server_args": ["--dtype=bfloat16"],
+        "generation_server_args": ["--max-num-seqs=32", "--enforce-eager"],
+    }
+    variant = {"name": "disabled", "command": ["vllm"], "watermarked": False}
+
+    command = server_command(config, variant, None)
+
+    assert "--dtype=bfloat16" in command
+    assert "--max-num-seqs=32" in command
+    assert "--enforce-eager" in command
 
 
 def test_select_variants_preserves_requested_order():

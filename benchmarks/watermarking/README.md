@@ -51,7 +51,8 @@ Run it only after reviewing the commands:
 Individual phases are `performance` and `generation`. Generation starts one
 server at a time, waits for `/health`, collects outputs, and stops the server.
 The enabled variant is restarted for every key because the key is an engine
-configuration.
+configuration. Use `generation_server_args` for engine settings that should
+only apply while collecting outputs, such as a concurrency cap.
 
 Use `--variant NAME` to run one variant and `--key KEY` to run one watermarked
 generation key. These selectors make independent server configurations safe to
