@@ -59,10 +59,10 @@ def common_header(
         lines.append(directive("qos", qos))
     if container_image:
         lines.append(directive("container-image", container_image))
+        lines.append(directive("container-mounts", "/mnt/vast:/mnt/vast"))
     lines.extend(
         [
             "",
-            "source /etc/shell-config/shell-config.sh",
             "set -euo pipefail",
             "unset VIRTUAL_ENV",
             "apt-get update >/dev/null",
