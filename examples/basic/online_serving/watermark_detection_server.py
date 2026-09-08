@@ -10,7 +10,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from vllm.tokenizers import TokenizerLike, cached_get_tokenizer
-from vllm.v1.watermarking import GumbelWatermarkDetector
+from vllm.v1.watermarking import (
+    DualKeyGumbelWatermarkDetector,
+    GumbelWatermarkDetector,
+)
 
 app = FastAPI()
 tokenizer: TokenizerLike | None = None
@@ -46,6 +49,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--key", required=True, type=int)
+    parser.add_argument(
+        "--algorithm", choices=("gumbel", "dual_key_gumbel"), default="gumbel"
+    )
     parser.add_argument("--prf", choices=("philox",), default="philox")
     parser.add_argument("--context-width", type=int, default=4)
     parser.add_argument("--p-value-threshold", type=float, default=0.01)
@@ -57,7 +63,12 @@ def parse_args() -> argparse.Namespace:
 def main(args: argparse.Namespace) -> None:
     global tokenizer, detector
     tokenizer = cached_get_tokenizer(args.tokenizer)
-    detector = GumbelWatermarkDetector(
+    detector_class = (
+        DualKeyGumbelWatermarkDetector
+        if args.algorithm == "dual_key_gumbel"
+        else GumbelWatermarkDetector
+    )
+    detector = detector_class(
         key=args.key,
         context_width=args.context_width,
         p_value_threshold=args.p_value_threshold,

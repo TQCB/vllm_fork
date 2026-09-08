@@ -90,6 +90,67 @@ def _select_max(best_value, best_token, candidate_value, candidate):
     )
 
 
+@triton.jit
+def philox_watermark_uniform(
+    contexts_ptr,
+    context_stride,
+    row,
+    token_ids,
+    key_0_value,
+    key_1_value,
+    CONTEXT_WIDTH: tl.constexpr,
+):
+    key_0 = key_0_value.to(tl.uint32)
+    key_1 = key_1_value.to(tl.uint32)
+    state_0 = tl.full((), _CONTEXT_DOMAIN, tl.uint32)
+    state_1 = tl.full((), CONTEXT_WIDTH, tl.uint32)
+    state_2 = tl.full((), 0, tl.uint32)
+    state_3 = tl.full((), 0, tl.uint32)
+    for offset in range(0, CONTEXT_WIDTH, 4):
+        context_0 = tl.load(contexts_ptr + row * context_stride + offset).to(tl.uint32)
+        if offset + 1 < CONTEXT_WIDTH:
+            context_1 = tl.load(contexts_ptr + row * context_stride + offset + 1).to(
+                tl.uint32
+            )
+        else:
+            context_1 = tl.full((), _UINT32_MASK - 1, tl.uint32)
+        if offset + 2 < CONTEXT_WIDTH:
+            context_2 = tl.load(contexts_ptr + row * context_stride + offset + 2).to(
+                tl.uint32
+            )
+        else:
+            context_2 = tl.full((), _UINT32_MASK - 2, tl.uint32)
+        if offset + 3 < CONTEXT_WIDTH:
+            context_3 = tl.load(contexts_ptr + row * context_stride + offset + 3).to(
+                tl.uint32
+            )
+        else:
+            context_3 = tl.full((), _UINT32_MASK - 3, tl.uint32)
+        state_0, state_1, state_2, state_3 = _philox4x32_10(
+            (state_0 ^ context_0) & _UINT32_MASK,
+            (state_1 ^ context_1) & _UINT32_MASK,
+            (state_2 ^ context_2) & _UINT32_MASK,
+            (state_3 ^ context_3) & _UINT32_MASK,
+            (key_0 ^ offset) & _UINT32_MASK,
+            key_1,
+        )
+
+    token_words = token_ids.to(tl.uint32)
+    output_0, output_1, output_2, output_3 = _philox4x32_10(
+        token_words >> 2,
+        state_0 + token_words * 0,
+        state_1 + token_words * 0,
+        state_2 + token_words * 0,
+        ((key_0 ^ state_3) & _UINT32_MASK) + token_words * 0,
+        ((key_1 ^ _TOKEN_DOMAIN) & _UINT32_MASK) + token_words * 0,
+    )
+    word_index = token_words & 3
+    output = tl.where(word_index == 0, output_0, output_1)
+    output = tl.where(word_index == 2, output_2, output)
+    output = tl.where(word_index == 3, output_3, output)
+    return _uint32_to_uniform(output)
+
+
 @triton.jit(do_not_specialize=["key_0_value", "key_1_value"])
 def _philox_gumbel_kernel(
     local_argmax_ptr,

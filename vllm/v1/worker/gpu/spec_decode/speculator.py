@@ -17,6 +17,8 @@ from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.model_executor.models import supports_multimodal_embeddings
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.v1.kv_cache_interface import KVCacheConfig
+from vllm.v1.watermarking import create_watermarker
+from vllm.v1.watermarking.watermarker import Watermarker
 from vllm.v1.worker.gpu.attn_utils import (
     build_attn_metadata,
     init_attn_backend,
@@ -163,6 +165,23 @@ class DraftModelSpeculator(BaseSpeculator):
                 fill,
                 dtype=dtype,
                 device=device,
+            )
+
+        self.draft_watermarker: Watermarker | None = None
+        self.watermark_contexts: torch.Tensor | None = None
+        self.watermarking: torch.Tensor | None = None
+        if watermark_config := vllm_config.watermark_config:
+            self.draft_watermarker = create_watermarker(
+                watermark_config, is_drafting=True
+            )
+            self.watermark_contexts = torch.zeros(
+                self.max_num_reqs,
+                watermark_config.context_width,
+                dtype=torch.int64,
+                device=device,
+            )
+            self.watermarking = torch.zeros(
+                self.max_num_reqs, dtype=torch.bool, device=device
             )
 
         self.supports_mm_inputs = False
@@ -374,7 +393,7 @@ class DraftModelSpeculator(BaseSpeculator):
     ) -> torch.Tensor:
         if draft_logits is not None:
             logits = self.model.compute_logits(hidden_states)
-            return gumbel_sample(
+            sampled = gumbel_sample(
                 logits,
                 idx_mapping,
                 temperature,
@@ -386,7 +405,39 @@ class DraftModelSpeculator(BaseSpeculator):
                 logits_cache_col=draft_step,
                 use_fp64=self.use_fp64_gumbel,
             )
+            if self.draft_watermarker is not None:
+                assert self.watermark_contexts is not None
+                assert self.watermarking is not None
+                request_temperatures = temperature[idx_mapping]
+                processed_logits = logits / torch.where(
+                    request_temperatures == 0, 1, request_temperatures
+                ).unsqueeze(-1)
+                watermarked = self.draft_watermarker.sample(
+                    processed_logits,
+                    self.watermark_contexts[: logits.shape[0]],
+                    lambda _: sampled,
+                ).token_ids
+                enabled = self.watermarking[: logits.shape[0]] & (
+                    request_temperatures != 0
+                )
+                sampled = torch.where(enabled, watermarked, sampled)
+                contexts = self.watermark_contexts[: logits.shape[0]]
+                contexts.copy_(
+                    torch.cat((contexts[:, 1:], sampled.unsqueeze(-1)), dim=-1)
+                )
+            return sampled
         return self._greedy_sample_draft(hidden_states)
+
+    def prepare_watermarking(
+        self, contexts: torch.Tensor, watermarking: torch.Tensor
+    ) -> None:
+        if self.draft_watermarker is None:
+            return
+        assert self.watermark_contexts is not None
+        assert self.watermarking is not None
+        num_reqs = contexts.shape[0]
+        self.watermark_contexts[:num_reqs].copy_(contexts)
+        self.watermarking[:num_reqs].copy_(watermarking)
 
     def _copy_request_inputs(
         self,

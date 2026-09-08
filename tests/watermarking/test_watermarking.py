@@ -9,13 +9,14 @@ import torch
 
 from vllm import SamplingParams
 from vllm.config.watermarking import WatermarkConfig
-from vllm.v1.watermarking import create_watermarker
+from vllm.v1.watermarking import create_watermarker, derive_watermark_key
 from vllm.v1.watermarking.gpu_sampler import GPUWatermarkSampler
 from vllm.v1.watermarking.watermarker import WatermarkSample
 from vllm.v1.worker.gpu.sample.sampler import Sampler
+from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
 
 
-@pytest.mark.parametrize("algorithm", ["gumbel"])
+@pytest.mark.parametrize("algorithm", ["gumbel", "dual_key_gumbel"])
 def test_watermarker_contract(algorithm: str):
     watermarker = create_watermarker(
         WatermarkConfig(algorithm=algorithm, key=42, context_width=4)
@@ -39,6 +40,22 @@ def test_large_context_width_warns_but_is_allowed():
         watermarker = create_watermarker(config)
 
     assert watermarker.context_width == 17
+
+
+def test_dual_key_watermarker_uses_domain_separated_keys():
+    config = WatermarkConfig(algorithm="dual_key_gumbel", key=42)
+
+    target = create_watermarker(config)
+    draft = create_watermarker(config, is_drafting=True)
+
+    assert target.prf.key == derive_watermark_key(42, b"target")
+    assert draft.prf.key == derive_watermark_key(42, b"draft")
+    assert target.prf.key != draft.prf.key
+
+
+def test_dual_key_derivation_is_stable():
+    assert derive_watermark_key(32, b"target") == 7484172436829796191
+    assert derive_watermark_key(32, b"draft") == 18284270469433393546
 
 
 def test_sampling_params_can_disable_watermarking():
@@ -142,3 +159,95 @@ def test_gpu_sampler_skips_watermarking_for_greedy_batch(monkeypatch):
     )
 
     assert actual is expected
+
+
+def test_gpu_sampler_builds_speculative_contexts_from_drafts():
+    sampler = object.__new__(GPUWatermarkSampler)
+    sampler.watermarker = SimpleNamespace(context_width=2)
+    sampler.req_states = SimpleNamespace(
+        all_token_ids=SimpleNamespace(gpu=torch.tensor([[100, 101, 10, 11, 0, 0]])),
+        prompt_len=SimpleNamespace(gpu=torch.tensor([2])),
+        total_len=SimpleNamespace(gpu=torch.tensor([4])),
+    )
+
+    contexts = sampler._get_contexts(
+        torch.tensor([0, 0, 0]),
+        torch.tensor([0, 1, 2]),
+        torch.tensor([11, 20, 21]),
+    )
+
+    assert torch.equal(contexts, torch.tensor([[10, 11], [11, 20], [20, 21]]))
+
+
+def test_gpu_sampler_builds_chunked_multi_request_speculative_contexts():
+    sampler = object.__new__(GPUWatermarkSampler)
+    sampler.watermarker = SimpleNamespace(context_width=2)
+    sampler.req_states = SimpleNamespace(
+        all_token_ids=SimpleNamespace(
+            gpu=torch.tensor(
+                [
+                    [100, 101, 10, 11, 0, 0],
+                    [200, 201, 30, 31, 0, 0],
+                    [300, 301, 50, 51, 0, 0],
+                ]
+            )
+        ),
+        prompt_len=SimpleNamespace(gpu=torch.tensor([2, 2, 2])),
+        total_len=SimpleNamespace(gpu=torch.tensor([4, 4, 4])),
+    )
+
+    contexts = sampler._get_contexts(
+        torch.tensor([2, 2, 1, 1]),
+        torch.tensor([0, 1, 0, 1]),
+        torch.tensor([51, 60, 31, 40]),
+    )
+
+    assert torch.equal(
+        contexts,
+        torch.tensor([[50, 51], [51, 60], [30, 31], [31, 40]]),
+    )
+
+
+def test_draft_sampler_uses_draft_key_and_advances_context(monkeypatch):
+    class StubSpeculator(DraftModelSpeculator):
+        def capture(self): ...
+
+        def init_cudagraph_manager(self, cudagraph_mode): ...
+
+        def load_draft_model(self, target_model, target_attn_layer_names): ...
+
+        def propose(self, *args, **kwargs): ...
+
+    class StubModel:
+        @staticmethod
+        def compute_logits(hidden_states):
+            return torch.zeros(hidden_states.shape[0], 8)
+
+    class StubWatermarker:
+        @staticmethod
+        def sample(logits, contexts, random_sample):
+            return WatermarkSample(torch.tensor([7, 7]), logits)
+
+    speculator = object.__new__(StubSpeculator)
+    speculator.model = StubModel()
+    speculator.use_fp64_gumbel = False
+    speculator.draft_watermarker = StubWatermarker()
+    speculator.watermark_contexts = torch.tensor([[1, 2], [3, 4]])
+    speculator.watermarking = torch.tensor([True, False])
+    monkeypatch.setattr(
+        "vllm.v1.worker.gpu.spec_decode.speculator.gumbel_sample",
+        lambda *args, **kwargs: torch.tensor([3, 4]),
+    )
+
+    sampled = speculator.sample_draft(
+        hidden_states=torch.zeros(2, 4),
+        sample_src_positions=torch.zeros(2, dtype=torch.int64),
+        idx_mapping=torch.tensor([0, 1]),
+        temperature=torch.ones(2),
+        seeds=torch.zeros(2, dtype=torch.int64),
+        draft_step=torch.tensor(0),
+        draft_logits=torch.zeros(2, 1, 8),
+    )
+
+    assert torch.equal(sampled, torch.tensor([7, 4]))
+    assert torch.equal(speculator.watermark_contexts, torch.tensor([[2, 7], [4, 4]]))

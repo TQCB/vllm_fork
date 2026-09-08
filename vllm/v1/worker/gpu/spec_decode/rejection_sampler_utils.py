@@ -4,6 +4,7 @@ import torch
 
 from vllm.triton_utils import tl, tldevice, triton
 from vllm.v1.worker.gpu.sample.gumbel import gumbel_block_argmax, tl_rand32
+from vllm.v1.worker.gpu.sample.watermark import philox_watermark_uniform
 
 
 @triton.jit
@@ -692,7 +693,7 @@ def _rejection_kernel(
     tl.store(draft_rejected_logsumexp_ptr + req_idx, draft_lse)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["watermark_key_0", "watermark_key_1"])
 def _resample_kernel(
     # [num_reqs, num_blocks]
     resampled_local_argmax_ptr,
@@ -725,6 +726,13 @@ def _resample_kernel(
     seed_ptr,
     # [num_logits]
     pos_ptr,
+    # [num_logits, watermark_context_width]
+    watermark_contexts_ptr,
+    watermark_contexts_stride,
+    # [max_num_reqs]
+    watermarking_ptr,
+    watermark_key_0,
+    watermark_key_1,
     # [num_logits]
     cumulative_log_p_ptr,
     vocab_size,
@@ -732,6 +740,8 @@ def _resample_kernel(
     HAS_DRAFT_LOGITS: tl.constexpr,
     USE_FP64: tl.constexpr,
     USE_BLOCK_VERIFICATION: tl.constexpr,
+    HAS_WATERMARK: tl.constexpr,
+    WATERMARK_CONTEXT_WIDTH: tl.constexpr,
 ):
     req_idx = tl.program_id(0)
     resample_idx = tl.load(rejected_step_ptr + req_idx)
@@ -841,6 +851,26 @@ def _resample_kernel(
         APPLY_TEMPERATURE=False,
         USE_FP64=USE_FP64,
     )
+    if HAS_WATERMARK:
+        watermark_enabled = tl.load(watermarking_ptr + req_state_idx) & (temp != 0.0)
+        uniform = philox_watermark_uniform(
+            watermark_contexts_ptr,
+            watermark_contexts_stride,
+            resample_token_idx,
+            block,
+            watermark_key_0,
+            watermark_key_1,
+            CONTEXT_WIDTH=WATERMARK_CONTEXT_WIDTH,
+        )
+        watermark_logits = tl.where(
+            residual_logits == residual_logits, residual_logits, float("-inf")
+        )
+        watermark_values = watermark_logits - tl.log(-tl.log(uniform))
+        watermark_value, watermark_idx = tl.max(
+            watermark_values, axis=0, return_indices=True
+        )
+        value = tl.where(watermark_enabled, watermark_value, value)
+        idx = tl.where(watermark_enabled, watermark_idx, idx)
     token_id = block_idx * BLOCK_SIZE + idx
     tl.store(
         resampled_local_argmax_ptr
@@ -947,11 +977,17 @@ def rejection_sample(
     synthetic_conditional_rates: torch.Tensor | None = None,
     use_fp64: bool = False,
     use_block_verification: bool = False,
+    watermark_contexts: torch.Tensor | None = None,
+    watermarking: torch.Tensor | None = None,
+    watermark_key: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert target_logits.ndim == 2 and target_logits.stride(-1) == 1
     assert draft_logits is None or (
         draft_logits.ndim == 3 and draft_logits.stride(-1) == 1
     )
+    has_watermark = watermark_contexts is not None
+    assert has_watermark == (watermarking is not None)
+    assert has_watermark == (watermark_key is not None)
     num_reqs = cu_num_logits.shape[0] - 1
     num_logits, vocab_size = target_logits.shape
     draft_logits_stride_0 = 0
@@ -1164,12 +1200,21 @@ def rejection_sample(
         temperature,
         seed,
         pos,
+        watermark_contexts,
+        watermark_contexts.stride(0) if watermark_contexts is not None else 0,
+        watermarking,
+        watermark_key & 0xFFFFFFFF if watermark_key is not None else 0,
+        watermark_key >> 32 if watermark_key is not None else 0,
         cumulative_log_p,
         vocab_size,
         BLOCK_SIZE=RESAMPLE_BLOCK_SIZE,
         HAS_DRAFT_LOGITS=has_draft_logits,
         USE_FP64=use_fp64,
         USE_BLOCK_VERIFICATION=use_block_verification,
+        HAS_WATERMARK=has_watermark,
+        WATERMARK_CONTEXT_WIDTH=(
+            watermark_contexts.shape[-1] if watermark_contexts is not None else 0
+        ),
     )
 
     # Insert the resampled tokens into the output sampled.

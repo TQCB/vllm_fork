@@ -8,7 +8,7 @@ import warnings
 
 import torch
 
-from vllm.config.watermarking import WatermarkPRFName
+from vllm.config.watermarking import WatermarkPRFName, derive_watermark_key
 from vllm.v1.watermarking.detector import (
     WatermarkDetector,
 )
@@ -98,6 +98,46 @@ class GumbelWatermarkDetector(WatermarkDetector):
 
     def _aggregate_scores(self, token_scores: torch.Tensor) -> float:
         return token_scores.sum().item()
+
+
+class DualKeyGumbelWatermarkDetector(GumbelWatermarkDetector):
+    def __init__(
+        self,
+        key: int,
+        context_width: int = 4,
+        p_value_threshold: float = 0.01,
+        prf: WatermarkPRFName = "philox",
+        deduplicate_contexts: bool = True,
+    ) -> None:
+        super().__init__(
+            derive_watermark_key(key, b"target"),
+            context_width,
+            p_value_threshold,
+            prf,
+            deduplicate_contexts,
+        )
+        self.draft_prf = create_prf(prf, derive_watermark_key(key, b"draft"))
+
+    def _score_tokens(
+        self, contexts: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
+        return torch.stack(
+            [
+                -torch.log1p(
+                    -prf.uniform(contexts, targets.unsqueeze(-1))
+                    .squeeze(-1)
+                    .to(torch.float64)
+                )
+                for prf in (self.prf, self.draft_prf)
+            ],
+            dim=-1,
+        )
+
+    def _get_p_value(self, score: float, num_scored_tokens: int) -> float:
+        return _gamma_survival_integer_shape(score * 2, num_scored_tokens * 2)
+
+    def _aggregate_scores(self, token_scores: torch.Tensor) -> float:
+        return token_scores.mean(dim=-1).sum().item()
 
 
 def _validate_context_width(context_width: int) -> None:

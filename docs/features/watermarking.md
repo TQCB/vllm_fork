@@ -39,6 +39,26 @@ decision and defaults to 4. Larger values make the watermark less robust to
 edits because an insertion, deletion, or substitution changes more subsequent
 contexts. Values above 16 are allowed but emit a warning.
 
+For standard probabilistic speculative decoding, select the
+`dual_key_gumbel` algorithm and set `draft_sample_method` to `probabilistic`:
+
+```bash
+vllm serve MODEL \
+  --speculative-config \
+  '{"method":"mtp","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}' \
+  --watermark-config \
+  '{"algorithm":"dual_key_gumbel","key":42}'
+```
+
+The algorithm derives independent draft and target keys from the configured
+master key using SHA-256 domain separation. Draft tokens use the derived draft
+key. Recovery tokens after a rejection and bonus tokens after full acceptance
+use the derived target key. The ordinary target-to-draft
+probability-ratio test remains unchanged, preserving the expected acceptance
+rate of unwatermarked speculative decoding. This is the dual-key construction
+from [SynthID-Text Supplementary Algorithm
+6](https://media.springernature.com/original/springer-static/esm/art%3A10.1038%2Fs41586-024-08025-4/MediaObjects/41586_2024_8025_MOESM1_ESM.pdf).
+
 ## Architecture
 
 `WatermarkConfig` selects an algorithm and PRF. Model Runner V2 constructs the
@@ -102,6 +122,14 @@ result = GumbelWatermarkDetector(key=42, prf="philox").detect(token_ids)
 print(result.p_value, result.is_watermarked)
 ```
 
+Use `DualKeyGumbelWatermarkDetector` with the same master key when detecting
+output produced with speculative decoding. Each token is scored under both
+derived keys because its source is not known to the detector:
+
+```python
+result = DualKeyGumbelWatermarkDetector(key=42, prf="philox").detect(token_ids)
+```
+
 The tokenizer, algorithm, PRF, key, and context width must match generation.
 Gumbel-max detection scores repeated contexts once by default so identical PRF
 random vectors are not treated as independent evidence. Keep
@@ -120,7 +148,7 @@ A minimal HTTP detector is available in
 
 ```bash
 python examples/basic/online_serving/watermark_detection_server.py \
-  --tokenizer MODEL --key 42 --prf philox
+  --tokenizer MODEL --key 42 --algorithm dual_key_gumbel --prf philox
 ```
 
 ```bash
@@ -136,7 +164,12 @@ watermarked output or to modify watermarked text so it is no longer detected.
 ## Limitations
 
 - Watermarking is currently available only with Model Runner V2.
-- Gumbel-max cannot be configured with speculative decoding.
+- `gumbel` does not support speculative decoding. `dual_key_gumbel` supports
+  standard probabilistic autoregressive speculative decoding. Greedy drafting,
+  parallel drafting, n-gram speculation, synthetic acceptance, and block
+  verification are not supported with watermarking.
+- Dual-key detection is weaker than single-key detection because every token
+  must be scored once under the draft key and once under the target key.
 - Beam search expands candidates from model log probabilities and does not apply
   Gumbel-max watermarking.
 - Models that replace the vLLM sampler with a custom sampler cannot use

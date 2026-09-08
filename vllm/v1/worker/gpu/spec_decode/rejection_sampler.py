@@ -10,6 +10,7 @@ from vllm.config.model import PROCESSED_LOGPROBS_MODES
 from vllm.triton_utils import tl, triton
 from vllm.v1.outputs import LogprobsTensors
 from vllm.v1.spec_decode.utils import unconditional_to_conditional_rates
+from vllm.v1.watermarking.gpu_sampler import GPUWatermarkSampler
 from vllm.v1.worker.gpu.input_batch import (
     InputBatch,
     get_num_sampled_and_rejected,
@@ -78,8 +79,10 @@ class RejectionSampler:
         sampler: Sampler,
         spec_config: SpeculativeConfig,
         device: torch.device,
+        watermark_key: int | None = None,
     ):
         self.sampler = sampler
+        self.watermark_key = watermark_key
         self.num_speculative_steps = spec_config.num_speculative_tokens
         self.enable_adaptive_verification = spec_config.enable_adaptive_verification
         rejection_sample_method = spec_config.rejection_sample_method
@@ -162,6 +165,16 @@ class RejectionSampler:
             draft_sampled,
             expanded_local_pos,
         )
+        watermark_contexts = None
+        watermarking = None
+        if self.watermark_key is not None:
+            assert isinstance(self.sampler, GPUWatermarkSampler)
+            watermark_contexts = self.sampler._get_contexts(
+                expanded_idx_mapping,
+                expanded_local_pos,
+                draft_sampled,
+            )
+            watermarking = self.sampler.watermarking.gpu
         sampled, num_sampled = rejection_sample(
             processed_logits,
             draft_logits,
@@ -177,6 +190,9 @@ class RejectionSampler:
             self.synthetic_conditional_rates,
             use_fp64=self.sampler.use_fp64_gumbel,
             use_block_verification=self.use_block_verification,
+            watermark_contexts=watermark_contexts,
+            watermarking=watermarking,
+            watermark_key=self.watermark_key,
         )
         return processed_logits, sampled, num_sampled
 
