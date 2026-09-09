@@ -64,6 +64,12 @@ Gumbel noise for categorical sampling. See
 Gumbel-max requires stochastic sampling. Greedy requests (`temperature=0`)
 bypass watermarking and emit a warning once per worker.
 
+When a generated-token context has already appeared in the same completion,
+generation uses ordinary sampling for that occurrence. Reusing the keyed random
+vector would otherwise correlate token choices and weaken the sequence-level
+distribution-preserving guarantee. The detector applies the matching context
+deduplication described below.
+
 ### SynthID-Text
 
 [SynthID-Text](https://www.nature.com/articles/s41586-024-08025-4) is planned but
