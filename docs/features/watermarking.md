@@ -52,6 +52,16 @@ the reference algorithms. `WatermarkDetector` consumes token IDs, so callers
 remain responsible for using the tokenizer and watermark profile that match
 generation.
 
+## Speculative decoding
+
+By default, a watermarking algorithm without native speculative-decoding
+support is rejected before model loading. Set
+`"allow_target_only_watermarking": true` to allow it: accepted draft tokens are
+not watermarked, while target-side rejection recovery and bonus sampling remain
+watermarked. The watermark signal is diluted in proportion to the share of
+output tokens supplied by accepted drafts; rejected drafts do not dilute it
+because their recovery tokens are watermarked.
+
 ## Algorithms
 
 ### Gumbel-max
@@ -63,6 +73,31 @@ Gumbel noise for categorical sampling. See
 
 Gumbel-max requires stochastic sampling. Greedy requests (`temperature=0`)
 bypass watermarking and emit a warning once per worker.
+
+The naive single-key `gumbel` implementation is not production-ready.
+
+### Dual-key Gumbel-max
+
+Dual-key Gumbel-max derives independent keys A and B from one configured master
+key using SHA-256 domain separation. During ordinary generation, each token uses
+key A with probability `1 - alpha` and key B with probability `alpha`; `alpha`
+defaults to 0.5. Detection scores every token against both keys.
+
+The same two key streams support speculative decoding without changing its
+acceptance rate. In this mode, the speculative protocol selects the key instead
+of `alpha`: draft tokens use key A, while rejection recovery and bonus tokens
+use key B. The ordinary target-to-draft probability-ratio test remains unchanged,
+implementing [SynthID-Text Supplementary Algorithm
+6](https://media.springernature.com/original/springer-static/esm/art%3A10.1038%2Fs41586-024-08025-4/MediaObjects/41586_2024_8025_MOESM1_ESM.pdf).
+
+Select `dual_key_gumbel` together with probabilistic drafting:
+
+```bash
+vllm serve MODEL \
+  --speculative-config \
+  '{"method":"mtp","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}' \
+  --watermark-config '{"algorithm":"dual_key_gumbel","key":42,"alpha":0.5}'
+```
 
 ### SynthID-Text
 
@@ -136,7 +171,7 @@ watermarked output or to modify watermarked text so it is no longer detected.
 ## Limitations
 
 - Watermarking is currently available only with Model Runner V2.
-- Gumbel-max cannot be configured with speculative decoding.
+- Not all watermarking algorithms have native speculative-decoding support.
 - Beam search expands candidates from model log probabilities and does not apply
   Gumbel-max watermarking.
 - Models that replace the vLLM sampler with a custom sampler cannot use

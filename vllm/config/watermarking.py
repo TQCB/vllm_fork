@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import hashlib
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -8,12 +9,13 @@ from typing_extensions import Self
 
 from vllm.config.utils import config
 
-WatermarkingAlgorithm = Literal["gumbel"]
+WatermarkingAlgorithm = Literal["gumbel", "dual_key_gumbel"]
 WatermarkPRFName = Literal["philox"]
 
-_SPECULATIVE_DECODING_SUPPORT: dict[WatermarkingAlgorithm, bool] = {
-    "gumbel": False,
-}
+
+def derive_watermark_key(key: int, domain: bytes) -> int:
+    digest = hashlib.sha256(domain + key.to_bytes(8, "big")).digest()
+    return int.from_bytes(digest[:8], "big")
 
 
 @config
@@ -24,17 +26,17 @@ class WatermarkConfig:
     """Secret key used to watermark generated text."""
     algorithm: WatermarkingAlgorithm = "gumbel"
     """Algorithm used to watermark generated text."""
+    alpha: float = Field(default=0.5, ge=0, le=1)
+    """Probability of selecting key B for dual-key watermarking."""
     context_width: int = Field(default=4, ge=1)
     """Number of prior output tokens used by the watermark PRF."""
     prf: WatermarkPRFName = "philox"
     """Pseudorandom function used by the watermarking algorithm."""
+    allow_target_only_watermarking: bool = False
+    """Allow speculative decoding without watermarking draft tokens."""
 
     @model_validator(mode="after")
     def validate_key(self) -> Self:
         if self.key > 2**64 - 1:
             raise ValueError("philox keys must fit in 64 bits")
         return self
-
-    @property
-    def supports_speculative_decoding(self) -> bool:
-        return _SPECULATIVE_DECODING_SUPPORT[self.algorithm]

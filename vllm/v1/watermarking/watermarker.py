@@ -4,7 +4,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Protocol, TypeAlias, runtime_checkable
 
 import torch
 
@@ -31,3 +31,12 @@ class Watermarker(ABC):
         random_sample: RandomSampler,
     ) -> WatermarkSample:
         raise NotImplementedError
+
+
+@runtime_checkable
+class SupportsSpeculativeDecoding(Protocol):
+    """A watermarker compatible with standard speculative rejection sampling."""
+
+    def create_draft_watermarker(self) -> Watermarker: ...
+
+    def create_target_watermarker(self) -> Watermarker: ...
