@@ -1129,6 +1129,7 @@ class VllmConfig:
         self,
         *,
         beam_search: bool = False,
+        watermarking: bool = True,
         custom_sampler: bool = False,
     ) -> None:
         watermark_config = getattr(self, "watermark_config", None)
@@ -1142,7 +1143,7 @@ class VllmConfig:
                 f"The {watermark_config.algorithm} watermarking algorithm "
                 "does not support speculative decoding."
             )
-        if beam_search:
+        if beam_search and watermarking:
             raise ValueError("Beam search is not supported with watermarking.")
         if custom_sampler:
             raise ValueError(

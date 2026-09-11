@@ -52,6 +52,32 @@ the reference algorithms. `WatermarkDetector` consumes token IDs, so callers
 remain responsible for using the tokenizer and watermark profile that match
 generation.
 
+## Compatibility
+
+| Generation mode | Behavior with watermarking configured |
+| --- | --- |
+| Temperature sampling, min-p, top-k, top-p, penalties, and built-in logit masks | Applied before watermark sampling |
+| Structured outputs and tool grammars | Supported; restrictive grammars may weaken or eliminate evidence at forced-token positions |
+| Mixed request batches | `watermarking=false` rows use ordinary sampling |
+| Greedy decoding | Rejected unless `watermarking=false` |
+| Explicit request seeds | Rejected unless `watermarking=false` |
+| Parallel sampling (`n > 1`) | Rejected unless `watermarking=false`; `best_of` is not implemented by the current V1 request path |
+| Trace replay | Rejected unless `watermarking=false` |
+| Beam search | Rejected unless `watermarking=false` |
+| Speculative decoding | All draft-model, n-gram, MTP, EAGLE, DFlash, and DSpark modes are rejected at engine configuration time |
+| Model-specific custom samplers | Rejected at engine startup |
+
+Prefix caching, chunked prefill, and model parallelism do not change the
+watermark context, which is read from the request's generated token history.
+Accelerator smoke tests cover real prefix-cache hits with chunked prefill and
+watermarked generation under tensor, pipeline, and data parallelism.
+
+Chat Completions, Completions, Responses, batch Chat Completions, transcription,
+and translation expose the `watermarking` request switch. Realtime
+transcription always uses ordinary greedy sampling and therefore disables
+watermarking internally. Pooling and embedding requests do not sample tokens
+and are unaffected.
+
 ## Algorithms
 
 ### Gumbel-max
@@ -61,8 +87,10 @@ generated-token context, and every candidate token, then uses the resulting
 Gumbel noise for categorical sampling. See
 [Aaronson's original presentation](https://simons.berkeley.edu/sites/default/files/2024-10/LLM24-2%20Slides%20-%20Scott%20Aaronson.pdf).
 
-Gumbel-max requires stochastic sampling. Greedy requests (`temperature=0`)
-bypass watermarking and emit a warning once per worker.
+Gumbel-max requires stochastic sampling. Requests with watermarking enabled are
+rejected when they use greedy decoding (`temperature=0`), an explicit sampling
+seed, parallel sampling (`n > 1`), or trace replay. Set `watermarking=false` to
+use these generation modes without watermarking.
 
 Single-key Gumbel-max watermarking may increase degenerate generations. In
 particular, reusing the same keyed random vector when a context repeats can
@@ -141,7 +169,12 @@ watermarked output or to modify watermarked text so it is no longer detected.
 
 - Watermarking is currently available only with Model Runner V2.
 - Gumbel-max cannot be configured with speculative decoding.
-- Beam search expands candidates from model log probabilities and does not apply
-  Gumbel-max watermarking.
+- Beam search expands candidates from model log probabilities and requires
+  `watermarking=false` when the engine has watermarking configured.
 - Models that replace the vLLM sampler with a custom sampler cannot use
   configured watermarking.
+- Global custom logits processors are unavailable because Model Runner V2 does
+  not support them.
+- Structured outputs and tool grammars are applied before watermark sampling,
+  but restrictive grammars can reduce the statistical evidence available to a
+  detector.
