@@ -8,13 +8,14 @@ import warnings
 
 import torch
 
-from vllm.config.watermarking import WatermarkPRFName
+from vllm.config.watermarking import WatermarkPRFName, derive_watermark_key
 from vllm.v1.watermarking.detector import (
     WatermarkDetector,
 )
 from vllm.v1.watermarking.prfs import PhiloxPRF, WatermarkPRF, create_prf
 from vllm.v1.watermarking.watermarker import (
     RandomSampler,
+    SupportsSpeculativeDecoding,
     Watermarker,
     WatermarkSample,
 )
@@ -97,6 +98,85 @@ class GumbelWatermarker(Watermarker):
         return WatermarkSample(token_ids, logits)
 
 
+class DualKeyGumbelWatermarker(Watermarker, SupportsSpeculativeDecoding):
+    def __init__(
+        self,
+        key: int,
+        context_width: int = 4,
+        prf: WatermarkPRFName = "philox",
+        alpha: float = 0.1,
+    ) -> None:
+        if not 0 <= alpha <= 1:
+            raise ValueError("alpha must be between 0 and 1")
+        self.alpha = alpha
+        self.draft_watermarker = GumbelWatermarker(
+            derive_watermark_key(key, b"key_a"), context_width, prf
+        )
+        self.target_watermarker = GumbelWatermarker(
+            derive_watermark_key(key, b"key_b"), context_width, prf
+        )
+        self._routing_logits_cache: dict[torch.device, torch.Tensor] = {}
+
+    def _routing_logits(self, device: torch.device) -> torch.Tensor:
+        # Building this tensor on every CUDA call stages a pageable H2D copy and
+        # synchronizes the stream.
+        cached = self._routing_logits_cache.get(device)
+        if cached is None:
+            cached = torch.tensor(
+                [1 - self.alpha, self.alpha],
+                dtype=torch.float32,
+                device=device,
+            ).log()
+            self._routing_logits_cache[device] = cached
+        return cached
+
+    @property
+    def context_width(self) -> int:
+        return self.draft_watermarker.context_width
+
+    def sample(
+        self,
+        logits: torch.Tensor,
+        contexts: torch.Tensor,
+        random_sampler: RandomSampler | None = None,
+        skip_mask: torch.Tensor | None = None,
+    ) -> WatermarkSample:
+        if self.alpha == 0:
+            return self.draft_watermarker.sample(
+                logits, contexts, random_sampler, skip_mask
+            )
+        if self.alpha == 1:
+            return self.target_watermarker.sample(
+                logits, contexts, random_sampler, skip_mask
+            )
+        if random_sampler is None:
+            raise ValueError("dual-key Gumbel routing requires a random sampler")
+
+        key_a_sample = self.draft_watermarker.sample(
+            logits, contexts, random_sampler, skip_mask
+        )
+        key_b_sample = self.target_watermarker.sample(
+            logits, contexts, random_sampler, skip_mask
+        )
+        routing_logits = self._routing_logits(logits.device).expand(logits.shape[0], -1)
+        use_key_a = random_sampler(routing_logits) == 0
+        return WatermarkSample(
+            torch.where(
+                use_key_a,
+                key_a_sample.token_ids,
+                key_b_sample.token_ids,
+            ),
+            logits,
+        )
+
+    def _sample_watermarked(
+        self,
+        logits: torch.Tensor,
+        contexts: torch.Tensor,
+    ) -> WatermarkSample:
+        raise ValueError("dual-key Gumbel routing requires a random sampler")
+
+
 class GumbelWatermarkDetector(WatermarkDetector):
     def __init__(
         self,
@@ -122,6 +202,46 @@ class GumbelWatermarkDetector(WatermarkDetector):
 
     def _aggregate_scores(self, token_scores: torch.Tensor) -> float:
         return token_scores.sum().item()
+
+
+class DualKeyGumbelWatermarkDetector(GumbelWatermarkDetector):
+    def __init__(
+        self,
+        key: int,
+        context_width: int = 4,
+        p_value_threshold: float = 0.01,
+        prf: WatermarkPRFName = "philox",
+        deduplicate_contexts: bool = True,
+    ) -> None:
+        super().__init__(
+            derive_watermark_key(key, b"key_a"),
+            context_width,
+            p_value_threshold,
+            prf,
+            deduplicate_contexts,
+        )
+        self.key_b_prf = create_prf(prf, derive_watermark_key(key, b"key_b"))
+
+    def _score_tokens(
+        self, contexts: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
+        return torch.stack(
+            [
+                -torch.log1p(
+                    -prf.uniform(contexts, targets.unsqueeze(-1))
+                    .squeeze(-1)
+                    .to(torch.float64)
+                )
+                for prf in (self.prf, self.key_b_prf)
+            ],
+            dim=-1,
+        )
+
+    def _get_p_value(self, score: float, num_scored_tokens: int) -> float:
+        return _gamma_survival_integer_shape(score * 2, num_scored_tokens * 2)
+
+    def _aggregate_scores(self, token_scores: torch.Tensor) -> float:
+        return token_scores.mean(dim=-1).sum().item()
 
 
 def _validate_context_width(context_width: int) -> None:

@@ -39,6 +39,13 @@ and defaults to 4. Larger values make the watermark less robust to
 edits because an insertion, deletion, or substitution changes more subsequent
 contexts. Values above 16 are allowed but emit a warning.
 
+`alpha` sets the key-B probability under `dual_key_gumbel` and has no effect
+with `gumbel`. See [Dual-key Gumbel-max](#dual-key-gumbel-max).
+
+`allow_target_only_watermarking` defaults to false and only has an effect when
+speculative decoding is enabled. See
+[Speculative decoding](#speculative-decoding).
+
 ## Architecture
 
 `WatermarkConfig` selects an algorithm and PRF. Model Runner V2 constructs the
@@ -51,6 +58,31 @@ Detection is separate from generation. vLLM provides detector primitives for
 the reference algorithms. `WatermarkDetector` consumes token IDs, so callers
 remain responsible for using the tokenizer and watermark profile that match
 generation.
+
+## Speculative decoding
+
+Watermarking requires speculative decoding to use probabilistic draft sampling,
+standard rejection sampling, and an autoregressive model-based method (`dspark`,
+`eagle`, `eagle3`, or `mtp`). Parallel drafting is supported only by `dspark`.
+Configurations that violate these constraints are rejected at startup.
+
+A watermarking algorithm without native speculative-decoding support is also
+rejected before model loading. Set
+`"allow_target_only_watermarking": true` to allow it: accepted draft tokens are
+not watermarked, while target-side rejection recovery and bonus sampling remain
+watermarked. The watermark signal is diluted in proportion to the share of
+output tokens supplied by accepted drafts; rejected drafts do not dilute it
+because their recovery tokens are watermarked.
+
+In one GSM8K measurement with MTP on a 2B model,
+`num_speculative_tokens=2`, and a mean acceptance length of 2.58, 61% of output
+tokens came from accepted drafts. The share of generations detected at
+`p_value <= 0.01` fell from 74.7% to 42.0% over 300 generations of roughly 385
+scored tokens each. This is an example rather than a guarantee: the loss depends
+on the deployment's acceptance rate and how many tokens the detector sees.
+
+For `dual_key_gumbel`, `alpha` has no effect under speculative decoding. The
+speculative protocol selects the key for each token instead.
 
 ## Algorithms
 
@@ -111,6 +143,29 @@ vllm serve MODEL \
   '{"algorithm":"gumbel","key":42,"deduplicate_contexts":"all"}'
 ```
 
+### Dual-key Gumbel-max
+
+Dual-key Gumbel-max derives independent keys A and B from one configured master
+key using SHA-256 domain separation. During ordinary generation, each token uses
+key A with probability `1 - alpha` and key B with probability `alpha`; `alpha`
+defaults to 0.1. Detection scores every token against both keys.
+
+The same two key streams support speculative decoding without changing its
+acceptance rate. In this mode, the speculative protocol selects the key instead
+of `alpha`: draft tokens use key A, while rejection recovery and bonus tokens
+use key B. The ordinary target-to-draft probability-ratio test remains unchanged,
+implementing [SynthID-Text Supplementary Algorithm
+6](https://media.springernature.com/original/springer-static/esm/art%3A10.1038%2Fs41586-024-08025-4/MediaObjects/41586_2024_8025_MOESM1_ESM.pdf).
+
+Select `dual_key_gumbel` together with probabilistic drafting:
+
+```bash
+vllm serve MODEL \
+  --speculative-config \
+  '{"method":"mtp","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}' \
+  --watermark-config '{"algorithm":"dual_key_gumbel","key":42,"alpha":0.1}'
+```
+
 ### SynthID-Text
 
 [SynthID-Text](https://www.nature.com/articles/s41586-024-08025-4) is planned but
@@ -149,7 +204,23 @@ result = GumbelWatermarkDetector(key=42, prf="philox").detect(token_ids)
 print(result.p_value, result.is_watermarked)
 ```
 
-The tokenizer, algorithm, PRF, key, and context width must match generation.
+Use the detector class that matches the generation algorithm:
+`GumbelWatermarkDetector` for `gumbel`, and `DualKeyGumbelWatermarkDetector` for
+`dual_key_gumbel`. The dual-key detector accepts the master key configured on
+the engine and derives keys A and B internally:
+
+```python
+from vllm.v1.watermarking import DualKeyGumbelWatermarkDetector
+
+detector = DualKeyGumbelWatermarkDetector(key=42, prf="philox")
+result = detector.detect(token_ids)
+```
+
+Using `GumbelWatermarkDetector` with the master key to score
+`dual_key_gumbel` output produces a null detection without an error because
+neither derived key equals the master key.
+
+The tokenizer, PRF, key, and context width must match generation.
 Gumbel-max detection scores repeated contexts once by default so identical PRF
 random vectors are not treated as independent evidence. Keep
 `deduplicate_contexts=True` unless the detector's calibration has been adjusted
@@ -183,7 +254,7 @@ watermarked output or to modify watermarked text so it is no longer detected.
 ## Limitations
 
 - Watermarking is currently available only with Model Runner V2.
-- Gumbel-max cannot be configured with speculative decoding.
+- Not all watermarking algorithms have native speculative-decoding support.
 - Beam search expands candidates from model log probabilities and does not apply
   Gumbel-max watermarking.
 - Models that replace the vLLM sampler with a custom sampler cannot use

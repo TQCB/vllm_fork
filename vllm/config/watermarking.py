@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import hashlib
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -11,14 +12,16 @@ from vllm.logger import init_logger
 
 logger = init_logger(__name__)
 
-WatermarkingAlgorithm = Literal["gumbel"]
+WatermarkingAlgorithm = Literal["gumbel", "dual_key_gumbel"]
 WatermarkPRFName = Literal["philox"]
 WatermarkContextScope = Literal["none", "single_turn", "all"]
 
-_SPECULATIVE_DECODING_SUPPORT: dict[WatermarkingAlgorithm, bool] = {
-    "gumbel": False,
-}
 _MIN_RECOMMENDED_DEDUP_HISTORY = 1024
+
+
+def derive_watermark_key(key: int, domain: bytes) -> int:
+    digest = hashlib.sha256(domain + key.to_bytes(8, "big")).digest()
+    return int.from_bytes(digest[:8], "big")
 
 
 @config
@@ -29,6 +32,8 @@ class WatermarkConfig:
     """Secret key used to watermark generated text."""
     algorithm: WatermarkingAlgorithm = "gumbel"
     """Algorithm used to watermark generated text."""
+    alpha: float = Field(default=0.1, ge=0, le=1)
+    """Probability of selecting key B for dual-key watermarking."""
     context_width: int = Field(default=4, ge=1)
     """Number of prior tokens used by the watermark PRF."""
     deduplicate_contexts: WatermarkContextScope = "single_turn"
@@ -44,6 +49,12 @@ class WatermarkConfig:
     `none`."""
     prf: WatermarkPRFName = "philox"
     """Pseudorandom function used by the watermarking algorithm."""
+    allow_target_only_watermarking: bool = False
+    """Allow speculative decoding without watermarking draft tokens."""
+
+    @property
+    def supports_speculative_decoding(self) -> bool:
+        return self.algorithm == "dual_key_gumbel"
 
     @model_validator(mode="after")
     def validate_watermark_settings(self) -> Self:
@@ -53,11 +64,11 @@ class WatermarkConfig:
             self.deduplicate_contexts_max_history is not None
             and self.deduplicate_contexts_max_history < _MIN_RECOMMENDED_DEDUP_HISTORY
         )
-        if self.algorithm == "gumbel" and (
+        if self.algorithm in ("gumbel", "dual_key_gumbel") and (
             self.deduplicate_contexts == "none" or history_is_too_short
         ):
             logger.warning_once(
-                "Single-key Gumbel-max watermarking with context deduplication "
+                "Gumbel-max watermarking with context deduplication "
                 "disabled or limited to fewer than "
                 f"{_MIN_RECOMMENDED_DEDUP_HISTORY} positions may increase the "
                 "frequency of degenerate generations, including repetition loops. "
@@ -67,7 +78,3 @@ class WatermarkConfig:
                 scope="global",
             )
         return self
-
-    @property
-    def supports_speculative_decoding(self) -> bool:
-        return _SPECULATIVE_DECODING_SUPPORT[self.algorithm]

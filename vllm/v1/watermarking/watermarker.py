@@ -3,6 +3,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 import torch
 
@@ -85,3 +86,11 @@ class Watermarker(ABC):
         random_sampler: RandomSampler,
     ) -> WatermarkSample | None:
         return None
+
+
+@runtime_checkable
+class SupportsSpeculativeDecoding(Protocol):
+    """A watermarker compatible with standard speculative rejection sampling."""
+
+    draft_watermarker: Watermarker
+    target_watermarker: Watermarker
